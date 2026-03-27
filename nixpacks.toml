@@ -1,11 +1,8 @@
 [phases.setup]
-nixPkgs = ["nodejs_20"]
+nixPkgs = ["python311", "libsodium"]
 
 [phases.install]
-cmds = ["npm install"]
-
-[phases.build]
-cmds = ["npm run build"]
+cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "node dist/index.mjs"
+cmd = "python main.py"
