@@ -374,3 +374,30 @@ class Database:
             """,
             ticket_id,
         )
+
+    async def list_closed_tickets(self, guild_id: int) -> list[Ticket]:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, channel_id, opener_id, target_id, platform, challenge_data, status, claimed_by
+                FROM tickets
+                WHERE guild_id=$1 AND status='closed'
+                ORDER BY id ASC
+                """,
+                guild_id,
+            )
+        return [
+            Ticket(
+                id=int(row["id"]),
+                guild_id=int(row["guild_id"]),
+                channel_id=int(row["channel_id"]),
+                opener_id=int(row["opener_id"]),
+                target_id=int(row["target_id"]),
+                platform=str(row["platform"]) if row["platform"] else None,
+                challenge_data=self._json_dict(row["challenge_data"]),
+                status=str(row["status"]),
+                claimed_by=int(row["claimed_by"]) if row["claimed_by"] else None,
+            )
+            for row in rows
+        ]

@@ -61,6 +61,7 @@ All settings should be managed from your website/dashboard:
 - `/ticket unclaim` → only the staff member who claimed the ticket can unclaim it
 - `/ticket force-unclaim` → owner only, removes any existing claim
 - `/ticket close` → asks confirmation, then closes ticket (opener or staff). After close: **only staff** can see the channel and choose: Delete / Save transcript / Reopen.
+- `/ticket clear_closed` → delete all closed ticket channels (staff only)
 
 ## Notes / Tips
 - To copy a user ID: enable Developer Mode in Discord → right-click user → **Copy ID**
@@ -74,4 +75,5 @@ All settings should be managed from your website/dashboard:
  - When a ticket is created, the bot pings: **all staff roles + opener + target** inside the ticket.
  - Ticket channels are named like `opener-vs-target`, or `openerclan-vs-targetclan` for clan tickets.
  - A ticket can only be claimed by one staff member at a time.
- - Closed tickets are moved into auto-created categories like `Closed (Top Mobile)`, `Closed (Top All)`, or `Closed (Top Clan)`.
+ - Closed tickets are moved into one shared auto-created category: `Closed Tickets`.
+ - When closed, ticket channels are renamed like `closed-xxxx-0001-top-mobile` or `closed-xxxx-0001-top-clan`.

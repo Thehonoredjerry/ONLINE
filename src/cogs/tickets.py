@@ -21,9 +21,7 @@ DEFAULT_CATEGORY_NAME = "Challenge Tickets"
 MOBILE_CATEGORY_NAME = "Challenge Tickets - Top Mobile"
 ALL_CATEGORY_NAME = "Challenge Tickets - Top All"
 CLAN_CATEGORY_NAME = "Challenge Tickets - Top Clan"
-CLOSED_MOBILE_CATEGORY_NAME = "Closed (Top Mobile)"
-CLOSED_ALL_CATEGORY_NAME = "Closed (Top All)"
-CLOSED_CLAN_CATEGORY_NAME = "Closed (Top Clan)"
+CLOSED_CATEGORY_NAME = "Closed Tickets"
 
 PANEL_VIEW_CUSTOM_ID_PREFIX = "challenge_ticket_panel:"
 PANEL_BTN_MOBILE_ID = f"{PANEL_VIEW_CUSTOM_ID_PREFIX}mobile"
@@ -91,6 +89,14 @@ def _format_message(settings, key: str, **kwargs) -> str:
 def _setting_enabled(settings, key: str, default: bool = False) -> bool:
     raw = str(settings.message_templates.get(key, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _platform_label(platform: str | None) -> str:
+    return {
+        "mobile": "top-mobile",
+        "all": "top-all",
+        "clan": "top-clan",
+    }.get(platform or "", "ticket")
 
 
 class ChallengeOpenModal(discord.ui.Modal):
@@ -326,16 +332,33 @@ class TicketGroup(app_commands.Group):
         return category
 
     async def _ensure_closed_category(self, guild: discord.Guild, platform: str | None) -> discord.CategoryChannel:
-        wanted_name = CLOSED_ALL_CATEGORY_NAME
-        if platform == "mobile":
-            wanted_name = CLOSED_MOBILE_CATEGORY_NAME
-        elif platform == "clan":
-            wanted_name = CLOSED_CLAN_CATEGORY_NAME
-
         for c in guild.categories:
-            if c.name == wanted_name:
+            if c.name == CLOSED_CATEGORY_NAME:
                 return c
-        return await guild.create_category(wanted_name, reason="Closed ticket category setup")
+        return await guild.create_category(CLOSED_CATEGORY_NAME, reason="Closed ticket category setup")
+
+    async def _build_open_channel_name(self, guild: discord.Guild, ticket, fallback_channel_name: str | None = None) -> str:
+        if ticket.platform == "clan":
+            opener_clan = str(ticket.challenge_data.get("opener_clan") or "opener")
+            target_clan = str(ticket.challenge_data.get("target_clan") or "target")
+            return _sanitize_channel_name(f"{opener_clan}-vs-{target_clan}")
+
+        opener_name = fallback_channel_name or "opener"
+        target_name = "target"
+        opener_member = guild.get_member(ticket.opener_id)
+        target_member = guild.get_member(ticket.target_id)
+        if opener_member:
+            opener_name = opener_member.display_name
+        elif fallback_channel_name and "-vs-" in fallback_channel_name:
+            opener_name = fallback_channel_name.split("-vs-", 1)[0]
+        if target_member:
+            target_name = target_member.display_name
+        elif fallback_channel_name and "-vs-" in fallback_channel_name:
+            target_name = fallback_channel_name.split("-vs-", 1)[1]
+        return _sanitize_channel_name(f"{opener_name}-vs-{target_name}")
+
+    def _build_closed_channel_name(self, ticket, base_name: str) -> str:
+        return _sanitize_channel_name(f"closed-{base_name}-{ticket.id:04d}-{_platform_label(ticket.platform)}")
 
     async def _get_ticket_channel(self, interaction: discord.Interaction) -> discord.TextChannel | None:
         if not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
@@ -822,6 +845,32 @@ class TicketGroup(app_commands.Group):
             view=ConfirmCloseView(self, ticket_id=ticket.id),
         )
 
+    @app_commands.command(
+        name="clear_closed",
+        description="Delete all closed ticket channels (staff only)",
+    )
+    async def clear_closed(self, interaction: discord.Interaction):
+        if not await self._ensure_allowed(interaction):
+            return
+        if not interaction.guild:
+            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+        if not await self._is_staff(interaction):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        closed_tickets = await self.db.list_closed_tickets(interaction.guild.id)
+        deleted = 0
+        for ticket in closed_tickets:
+            channel = interaction.guild.get_channel(ticket.channel_id)
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await channel.delete(reason=f"Closed ticket cleanup by {interaction.user}")
+                    deleted += 1
+                except discord.HTTPException:
+                    continue
+
+        await interaction.followup.send(f"Deleted {deleted} closed ticket channel(s).", ephemeral=True)
+
     async def _perform_close(self, interaction: discord.Interaction, ticket_id: int) -> None:
         # Called from the confirmation view
         if not interaction.guild or not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
@@ -847,7 +896,12 @@ class TicketGroup(app_commands.Group):
 
         try:
             closed_category = await self._ensure_closed_category(interaction.guild, ticket.platform)
-            await interaction.channel.edit(category=closed_category, reason=f"Ticket closed by {interaction.user}")
+            closed_name = self._build_closed_channel_name(ticket, interaction.channel.name)
+            await interaction.channel.edit(
+                name=closed_name,
+                category=closed_category,
+                reason=f"Ticket closed by {interaction.user}",
+            )
         except discord.HTTPException:
             pass
 
@@ -988,7 +1042,8 @@ class CloseOptionsView(discord.ui.View):
 
         try:
             open_category = await self.parent._ensure_category(interaction.guild, ticket.platform)
-            await channel.edit(category=open_category, reason=f"Ticket reopened by {interaction.user}")
+            open_name = await self.parent._build_open_channel_name(interaction.guild, ticket, channel.name)
+            await channel.edit(name=open_name, category=open_category, reason=f"Ticket reopened by {interaction.user}")
         except discord.HTTPException:
             pass
 
