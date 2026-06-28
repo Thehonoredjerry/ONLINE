@@ -45,6 +45,7 @@ DEFAULT_MESSAGE_TEMPLATES = {
     "ticket_created_reply": "Ticket created: {channel}\nOpen: {channel_url}",
     "close_confirm_message": "Are you sure you want to close this ticket?",
     "close_notice_message": "Ticket closed by <@{closer_id}>.\nStaff options:",
+    "closed_header_message": "Closed Ticket #{ticket_id} • {platform_label}\nOpener: <@{opener_id}>\nTarget: <@{target_id}>",
     "claim_success_message": "Claimed by <@{claimer_id}>.",
     "reopen_message": "Ticket reopened by <@{reopener_id}>.\n{staff} <@{opener_id}> <@{target_id}>",
 }
@@ -94,10 +95,10 @@ def _setting_enabled(settings, key: str, default: bool = False) -> bool:
 
 def _platform_label(platform: str | None) -> str:
     return {
-        "mobile": "top-mobile",
-        "all": "top-all",
-        "clan": "top-clan",
-    }.get(platform or "", "ticket")
+        "mobile": "Top Mobile",
+        "all": "Top All",
+        "clan": "Top Clan",
+    }.get(platform or "", "Ticket")
 
 
 def _render_transcript_html(
@@ -1078,9 +1079,6 @@ class TicketGroup(app_commands.Group):
             log.info("ticket_close_stage=prepare guild=%s channel=%s ticket=%s", interaction.guild.id, channel.id, ticket.id)
             try:
                 closed_category = await self._ensure_closed_category(interaction.guild, ticket.platform)
-                open_name = await self._build_open_channel_name(interaction.guild, ticket, channel.name)
-                closed_name = self._build_closed_channel_name(ticket, open_name)
-
                 deny_overwrite = discord.PermissionOverwrite(
                     view_channel=False,
                     send_messages=False,
@@ -1100,11 +1098,7 @@ class TicketGroup(app_commands.Group):
                         overwrite=deny_overwrite,
                         reason=f"Ticket closed by {interaction.user}",
                     )
-                await channel.edit(
-                    name=closed_name,
-                    category=closed_category,
-                    reason=f"Ticket closed by {interaction.user}",
-                )
+                await channel.edit(category=closed_category, reason=f"Ticket closed by {interaction.user}")
             except discord.HTTPException as error:
                 log.exception(
                     "ticket_close_stage_failed stage=discord_update guild=%s channel=%s ticket=%s",
@@ -1126,6 +1120,16 @@ class TicketGroup(app_commands.Group):
 
             settings = await self.db.get_guild_settings(interaction.guild.id)
             try:
+                await channel.send(
+                    _format_message(
+                        settings,
+                        "closed_header_message",
+                        ticket_id=f"{ticket.id:04d}",
+                        platform_label=_platform_label(ticket.platform),
+                        opener_id=ticket.opener_id,
+                        target_id=ticket.target_id,
+                    )
+                )
                 await channel.send(
                     _format_message(
                         settings,
@@ -1263,7 +1267,7 @@ class CloseOptionsView(discord.ui.View):
         html_doc = _render_transcript_html(interaction.guild, channel, ticket, history)
         file = discord.File(
             fp=io.BytesIO(html_doc.encode("utf-8", errors="replace")),
-            filename=f"ticket-{channel.id}-transcript.html",
+            filename=f"ticket-{ticket.id:04d}-{_platform_label(ticket.platform).lower().replace(' ', '-')}-transcript.html",
         )
 
         await transcript_channel.send(
@@ -1284,8 +1288,7 @@ class CloseOptionsView(discord.ui.View):
 
         try:
             open_category = await self.parent._ensure_category(interaction.guild, ticket.platform)
-            open_name = await self.parent._build_open_channel_name(interaction.guild, ticket, channel.name)
-            await channel.edit(name=open_name, category=open_category, reason=f"Ticket reopened by {interaction.user}")
+            await channel.edit(category=open_category, reason=f"Ticket reopened by {interaction.user}")
         except discord.HTTPException:
             pass
 
@@ -1338,25 +1341,6 @@ class CloseOptionsView(discord.ui.View):
                 channel=channel.mention,
             ),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
-        )
-        embed = discord.Embed(
-            title="Challenge Ticket",
-            description=(
-                "Use this channel to discuss the challenge.\n\n"
-                "Use the buttons below or staff commands: `/ticket claim`, `/ticket add`, `/ticket close`"
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Opener", value=f"<@{ticket.opener_id}>", inline=True)
-        embed.add_field(name="Target", value=f"<@{ticket.target_id}>", inline=True)
-        if ticket.platform:
-            embed.add_field(name="Platform", value=ticket.platform, inline=True)
-        if ticket.platform == "clan":
-            embed.add_field(name="Opener Clan", value=str(ticket.challenge_data.get("opener_clan") or "-"), inline=True)
-            embed.add_field(name="Target Clan", value=str(ticket.challenge_data.get("target_clan") or "-"), inline=True)
-        await channel.send(
-            embed=embed,
-            view=TicketManageView(self.parent, ticket_id=ticket.id),
         )
 
 
