@@ -19,8 +19,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "1150660855025909800").strip() or "1150660855025909800")
 
 DEV_GUILD_ID = os.getenv("DEV_GUILD_ID", "").strip() or None
-TICKET_CATEGORY_ID = os.getenv("TICKET_CATEGORY_ID", "").strip() or None
-STAFF_ROLE_ID = os.getenv("STAFF_ROLE_ID", "").strip() or None
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip() or None
 
 DELETE_CLOSED_TICKETS = _get_bool("DELETE_CLOSED_TICKETS", False)
 

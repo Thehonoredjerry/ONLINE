@@ -35,33 +35,33 @@ python -m src.main
    - `DISCORD_TOKEN`
    - `DATABASE_URL` (Railway provides this for the Postgres plugin)
    - (optional) `DEV_GUILD_ID` for faster command syncing
-   - (optional) `STAFF_ROLE_ID` if you want to pre-set it
-   - (optional) `TICKET_CATEGORY_ID` if you want to pre-set it
+   - (optional) `DASHBOARD_URL` to point users/admins to your website dashboard
 5. Set Start Command:
    - `python -m src.main`
 
 ## 4) First-time setup in your server
 **Important:** the bot only works in servers you explicitly enable with `/allow-bot` (owner only).
 
-Run these once (admin / manage server):
-- `/ticket set_staff_role` → pick the staff role
-- `/ticket set_category platform:mobile` → pick the Mobile category (optional)
-- `/ticket set_category platform:pc` → pick the PC category (optional)
+All settings should be managed from your website/dashboard:
+- staff role IDs
+- mobile category ID
+- pc category ID
+- transcript channel ID
+- panel text
+- custom ticket messages
 
 ## Commands
 - `/allow-bot` → enable the bot in the current server (owner only)
 - `/ticket open target_user_id:<id>` → (staff only) manual/backup way to create a ticket
 - `/ticket panel` → send a message with **Mobile/PC** buttons that opens a modal (admin)
-- `/ticket set_category platform:(mobile|pc) category:<category>` → set category for each platform (admin)
-- `/ticket set_transcript_channel channel:<channel>` → set where transcripts are saved (admin)
 - `/ticket add user:<user>` → add extra user (staff only)
-- `/ticket claim` → mark as claimed (staff only)
+- `/ticket claim` → mark as claimed (staff roles or owner only)
 - `/ticket close` → asks confirmation, then closes ticket (opener or staff). After close: **only staff** can see the channel and choose: Delete / Save transcript / Reopen.
-- `/ticket set_staff_role role:<role>` → set staff role (admin)
 
 ## Notes / Tips
 - To copy a user ID: enable Developer Mode in Discord → right-click user → **Copy ID**
 - Global slash commands can take time to appear. For testing, set `DEV_GUILD_ID` to your server ID (guild-only sync).
  - Recommended flow: run `/ticket panel` in the channel where you want users to open challenges, then users click **Mobile** or **PC** and paste the target user ID.
  - The modal only asks for **Target user ID** (required).
- - When a ticket is created, the bot pings: **staff role + opener + target** inside the ticket.
+ - When a ticket is created, the bot pings: **all staff roles + opener + target** inside the ticket.
+ - Ticket channels are named like `opener-vs-target`.

@@ -9,10 +9,11 @@ import asyncpg
 @dataclass
 class GuildSettings:
     guild_id: int
-    staff_role_id: Optional[int]
+    staff_role_ids: list[int]
     ticket_category_mobile_id: Optional[int]
     ticket_category_pc_id: Optional[int]
     transcript_channel_id: Optional[int]
+    message_templates: dict
 
 
 @dataclass
@@ -50,9 +51,11 @@ class Database:
                 CREATE TABLE IF NOT EXISTS guild_settings (
                   guild_id BIGINT PRIMARY KEY,
                   staff_role_id BIGINT NULL,
+                  staff_role_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                   ticket_category_mobile_id BIGINT NULL,
                   ticket_category_pc_id BIGINT NULL,
                   transcript_channel_id BIGINT NULL,
+                  message_templates JSONB NOT NULL DEFAULT '{}'::jsonb,
                   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
@@ -91,6 +94,22 @@ class Database:
             await conn.execute(
                 "ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS transcript_channel_id BIGINT NULL;"
             )
+            await conn.execute(
+                "ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS staff_role_ids JSONB NOT NULL DEFAULT '[]'::jsonb;"
+            )
+            await conn.execute(
+                "ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS message_templates JSONB NOT NULL DEFAULT '{}'::jsonb;"
+            )
+            await conn.execute(
+                """
+                UPDATE guild_settings
+                SET staff_role_ids = CASE
+                  WHEN staff_role_id IS NOT NULL AND (staff_role_ids = '[]'::jsonb OR staff_role_ids IS NULL)
+                    THEN jsonb_build_array(staff_role_id)
+                  ELSE COALESCE(staff_role_ids, '[]'::jsonb)
+                END
+                """
+            )
             # legacy column (if present) won't be removed; we just stop using it
             # Migrations for older installs
             await conn.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS platform TEXT NULL;")
@@ -127,16 +146,19 @@ class Database:
     async def get_guild_settings(self, guild_id: int) -> GuildSettings:
         row = await self._fetchrow(
             """
-            SELECT guild_id, staff_role_id, ticket_category_mobile_id, ticket_category_pc_id, transcript_channel_id
+            SELECT guild_id, staff_role_id, staff_role_ids, ticket_category_mobile_id, ticket_category_pc_id, transcript_channel_id, message_templates
             FROM guild_settings
             WHERE guild_id=$1
             """,
             guild_id,
         )
         if row:
+            staff_role_ids = [int(x) for x in (row["staff_role_ids"] or [])]
+            if row["staff_role_id"] and int(row["staff_role_id"]) not in staff_role_ids:
+                staff_role_ids.append(int(row["staff_role_id"]))
             return GuildSettings(
                 guild_id=int(row["guild_id"]),
-                staff_role_id=int(row["staff_role_id"]) if row["staff_role_id"] else None,
+                staff_role_ids=staff_role_ids,
                 ticket_category_mobile_id=int(row["ticket_category_mobile_id"])
                 if row["ticket_category_mobile_id"]
                 else None,
@@ -144,27 +166,44 @@ class Database:
                 transcript_channel_id=int(row["transcript_channel_id"])
                 if row["transcript_channel_id"]
                 else None,
+                message_templates=dict(row["message_templates"]) if row["message_templates"] else {},
             )
 
         await self._execute("INSERT INTO guild_settings(guild_id) VALUES ($1)", guild_id)
         return GuildSettings(
             guild_id=guild_id,
-            staff_role_id=None,
+            staff_role_ids=[],
             ticket_category_mobile_id=None,
             ticket_category_pc_id=None,
             transcript_channel_id=None,
+            message_templates={},
         )
 
-    async def set_staff_role(self, guild_id: int, staff_role_id: int | None) -> None:
+    async def set_staff_roles(self, guild_id: int, staff_role_ids: list[int]) -> None:
         await self._execute(
             """
-            INSERT INTO guild_settings(guild_id, staff_role_id, updated_at)
-            VALUES ($1, $2, NOW())
+            INSERT INTO guild_settings(guild_id, staff_role_id, staff_role_ids, updated_at)
+            VALUES ($1, $2, $3, NOW())
             ON CONFLICT (guild_id)
-            DO UPDATE SET staff_role_id=EXCLUDED.staff_role_id, updated_at=NOW()
+            DO UPDATE SET staff_role_id=EXCLUDED.staff_role_id, staff_role_ids=EXCLUDED.staff_role_ids, updated_at=NOW()
             """,
             guild_id,
-            staff_role_id,
+            staff_role_ids[0] if staff_role_ids else None,
+            staff_role_ids,
+        )
+
+    async def set_message_template(self, guild_id: int, key: str, value: str) -> None:
+        await self._execute(
+            """
+            INSERT INTO guild_settings(guild_id, message_templates, updated_at)
+            VALUES ($1, jsonb_build_object($2, $3), NOW())
+            ON CONFLICT (guild_id)
+            DO UPDATE SET message_templates = COALESCE(guild_settings.message_templates, '{}'::jsonb) || jsonb_build_object($2, $3),
+                          updated_at=NOW()
+            """,
+            guild_id,
+            key,
+            value,
         )
 
     async def set_ticket_category_mobile(self, guild_id: int, ticket_category_id: int | None) -> None:

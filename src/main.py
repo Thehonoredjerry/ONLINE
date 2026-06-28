@@ -39,6 +39,24 @@ class ChallengeTicketBot(commands.Bot):
             await self.tree.sync()
             log.info("Synced global commands (can take a while to appear).")
 
+    async def on_error(self, event_method: str, /, *args, **kwargs) -> None:
+        log.exception("discord_event_error event=%s", event_method)
+
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
+    ) -> None:
+        log.exception(
+            "app_command_error guild=%s user=%s command=%s",
+            getattr(interaction.guild, "id", None),
+            getattr(interaction.user, "id", None),
+            getattr(interaction.command, "qualified_name", None),
+            exc_info=error,
+        )
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Command failed. Check Railway logs.", ephemeral=True)
+        else:
+            await interaction.followup.send("Command failed. Check Railway logs.", ephemeral=True)
+
     async def close(self) -> None:
         await self.db.close()
         await super().close()
