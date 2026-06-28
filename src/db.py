@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -117,6 +118,38 @@ class Database:
                 "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS challenge_data JSONB NOT NULL DEFAULT '{}'::jsonb;"
             )
 
+    @staticmethod
+    def _json_list_of_ints(value: Any) -> list[int]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+        if not isinstance(value, list):
+            return []
+        result: list[int] = []
+        for item in value:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    @staticmethod
+    def _json_dict(value: Any) -> dict:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        return dict(value)
+
     async def is_guild_allowed(self, guild_id: int) -> bool:
         row = await self._fetchrow("SELECT guild_id FROM allowed_guilds WHERE guild_id=$1", guild_id)
         return row is not None
@@ -153,7 +186,7 @@ class Database:
             guild_id,
         )
         if row:
-            staff_role_ids = [int(x) for x in (row["staff_role_ids"] or [])]
+            staff_role_ids = self._json_list_of_ints(row["staff_role_ids"])
             if row["staff_role_id"] and int(row["staff_role_id"]) not in staff_role_ids:
                 staff_role_ids.append(int(row["staff_role_id"]))
             return GuildSettings(
@@ -166,7 +199,7 @@ class Database:
                 transcript_channel_id=int(row["transcript_channel_id"])
                 if row["transcript_channel_id"]
                 else None,
-                message_templates=dict(row["message_templates"]) if row["message_templates"] else {},
+                message_templates=self._json_dict(row["message_templates"]),
             )
 
         await self._execute("INSERT INTO guild_settings(guild_id) VALUES ($1)", guild_id)
@@ -273,7 +306,7 @@ class Database:
             opener_id=int(row["opener_id"]),
             target_id=int(row["target_id"]),
             platform=str(row["platform"]) if row["platform"] else None,
-            challenge_data=dict(row["challenge_data"]) if row["challenge_data"] else {},
+            challenge_data=self._json_dict(row["challenge_data"]),
             status=str(row["status"]),
             claimed_by=int(row["claimed_by"]) if row["claimed_by"] else None,
         )
@@ -296,7 +329,7 @@ class Database:
             opener_id=int(row["opener_id"]),
             target_id=int(row["target_id"]),
             platform=str(row["platform"]) if row["platform"] else None,
-            challenge_data=dict(row["challenge_data"]) if row["challenge_data"] else {},
+            challenge_data=self._json_dict(row["challenge_data"]),
             status=str(row["status"]),
             claimed_by=int(row["claimed_by"]) if row["claimed_by"] else None,
         )
