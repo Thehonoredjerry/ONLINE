@@ -92,6 +92,60 @@ class TicketPanelView(discord.ui.View):
         await interaction.response.send_modal(ChallengeOpenModal(self.parent, "pc"))
 
 
+class TicketManageView(discord.ui.View):
+    def __init__(self, parent: "TicketGroup", ticket_id: int):
+        super().__init__(timeout=86400)
+        self.parent = parent
+        self.ticket_id = ticket_id
+
+    async def _get_ticket_and_channel(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
+            return None, None
+        ticket = await self.parent.db.get_ticket_by_channel(interaction.channel.id)
+        if not ticket or ticket.id != self.ticket_id:
+            return None, interaction.channel
+        return ticket, interaction.channel
+
+    async def _deny(self, interaction: discord.Interaction, msg: str):
+        if not interaction.response.is_done():
+            await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.primary)
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        if not await self.parent._ensure_allowed(interaction):
+            return
+        ticket, channel = await self._get_ticket_and_channel(interaction)
+        if not ticket or not channel or not interaction.guild:
+            return await self._deny(interaction, "This is not a ticket channel.")
+        if ticket.status == "closed":
+            return await self._deny(interaction, "This ticket is already closed.")
+        if not await self.parent._is_staff(interaction):
+            return await self._deny(interaction, "Staff only.")
+
+        await self.parent.db.claim_ticket(ticket.id, interaction.user.id)
+        await interaction.response.send_message(f"Claimed by {interaction.user.mention}.")
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        if not await self.parent._ensure_allowed(interaction):
+            return
+        ticket, channel = await self._get_ticket_and_channel(interaction)
+        if not ticket or not channel:
+            return await self._deny(interaction, "This is not a ticket channel.")
+        if ticket.status == "closed":
+            return await self._deny(interaction, "This ticket is already closed.")
+        if not await self.parent._can_manage_ticket(interaction, ticket):
+            return await self._deny(interaction, "Only the opener or staff can close this ticket.")
+
+        await interaction.response.send_message(
+            "Are you sure you want to close this ticket?",
+            ephemeral=True,
+            view=ConfirmCloseView(self.parent, ticket_id=ticket.id),
+        )
+
+
 class TicketGroup(app_commands.Group):
     def __init__(self, bot: commands.Bot, db: Database):
         super().__init__(name="ticket", description="Challenge ticket system")
@@ -356,18 +410,12 @@ class TicketGroup(app_commands.Group):
 
         opener_id = interaction.user.id
         opener_display = interaction.user.display_name
+        bot_member = interaction.guild.me or interaction.guild.get_member(self.bot.user.id if self.bot.user else 0)
 
         channel_name = _sanitize_channel_name(f"challenge-{opener_display}-{target_id}")
 
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                manage_channels=True,
-                manage_messages=True,
-                read_message_history=True,
-            ),
             interaction.user: discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True
             ),
@@ -375,6 +423,14 @@ class TicketGroup(app_commands.Group):
                 view_channel=True, send_messages=True, read_message_history=True
             ),
         }
+        if bot_member is not None:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+                read_message_history=True,
+            )
         if staff_role:
             overwrites[staff_role] = discord.PermissionOverwrite(
                 view_channel=True,
@@ -387,48 +443,68 @@ class TicketGroup(app_commands.Group):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True, thinking=True)
 
-        channel = await interaction.guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites,
-            reason=f"Challenge ticket opened by {interaction.user} against {target_id}",
-        )
+        channel: discord.TextChannel | None = None
+        try:
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Challenge ticket opened by {interaction.user} against {target_id}",
+            )
 
-        await self.db.create_ticket(
-            guild_id=interaction.guild.id,
-            channel_id=channel.id,
-            opener_id=opener_id,
-            target_id=target_id,
-            platform=platform,
-            challenge_data=challenge_data,
-        )
+            ticket = await self.db.create_ticket(
+                guild_id=interaction.guild.id,
+                channel_id=channel.id,
+                opener_id=opener_id,
+                target_id=target_id,
+                platform=platform,
+                challenge_data=challenge_data,
+            )
 
-        # Initial messages inside the ticket (ping staff + both users)
-        staff_ping = staff_role.mention if staff_role else ""
-        await channel.send(f"{staff_ping} <@{opener_id}> <@{target_id}>")
+            staff_ping = staff_role.mention if staff_role else ""
+            await channel.send(
+                f"{staff_ping} <@{opener_id}> <@{target_id}>",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+            )
 
-        header = f"Challenge ticket opened: <@{opener_id}> vs <@{target_id}>"
-        if platform:
-            header += f" (**{platform}**)"
-        await channel.send(header)
-        embed = discord.Embed(
-            title="Challenge Ticket",
-            description=(
-                "Use this channel to discuss the challenge.\n\n"
-                "**Staff commands:** `/ticket claim`, `/ticket add`, `/ticket close`"
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Opener", value=f"<@{opener_id}>", inline=True)
-        embed.add_field(name="Target", value=f"<@{target_id}>", inline=True)
-        if platform:
-            embed.add_field(name="Platform", value=platform, inline=True)
-        await channel.send(embed=embed)
+            embed = discord.Embed(
+                title="Challenge Ticket",
+                description=(
+                    "Use this channel to discuss the challenge.\n\n"
+                    "Use the buttons below or staff commands: `/ticket claim`, `/ticket add`, `/ticket close`"
+                ),
+                color=discord.Color.blurple(),
+            )
+            embed.add_field(name="Opener", value=f"<@{opener_id}>", inline=True)
+            embed.add_field(name="Target", value=f"<@{target_id}>", inline=True)
+            if platform:
+                embed.add_field(name="Platform", value=platform, inline=True)
 
-        if interaction.response.is_done():
-            await interaction.followup.send(f"Ticket created: {channel.mention}", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
+            content = f"Challenge ticket opened: <@{opener_id}> vs <@{target_id}>"
+            if platform:
+                content += f" (**{platform}**)"
+            await channel.send(
+                content=content,
+                embed=embed,
+                view=TicketManageView(self, ticket_id=ticket.id),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+
+            reply_text = f"Ticket created: {channel.mention}\nOpen: {channel.jump_url}"
+            await interaction.followup.send(reply_text, ephemeral=True)
+        except Exception:
+            if channel is not None:
+                try:
+                    await channel.send("Ticket created, but the setup message failed. Staff should check bot logs.")
+                except Exception:
+                    pass
+            try:
+                await interaction.followup.send(
+                    "The ticket channel was created, but setup failed. Please tell staff to check the bot logs.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
 
     @app_commands.command(
         name="add",
