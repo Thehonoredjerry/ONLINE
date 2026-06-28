@@ -266,7 +266,6 @@ class TicketManageView(discord.ui.View):
         settings = await self.parent.db.get_guild_settings(interaction.guild.id)
         await interaction.response.send_message(
             _format_message(settings, "close_confirm_message", opener_id=ticket.opener_id, target_id=ticket.target_id),
-            ephemeral=True,
             view=ConfirmCloseView(self.parent, ticket_id=ticket.id),
         )
 
@@ -841,7 +840,6 @@ class TicketGroup(app_commands.Group):
         settings = await self.db.get_guild_settings(interaction.guild.id)
         await interaction.response.send_message(
             _format_message(settings, "close_confirm_message", opener_id=ticket.opener_id, target_id=ticket.target_id),
-            ephemeral=True,
             view=ConfirmCloseView(self, ticket_id=ticket.id),
         )
 
@@ -926,17 +924,27 @@ class ConfirmCloseView(discord.ui.View):
 
     @discord.ui.button(label="Confirm close", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(thinking=False)
         await self.parent._perform_close(interaction, self.ticket_id)
         try:
             await interaction.followup.send("Ticket closed.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+        try:
+            if interaction.message:
+                await interaction.message.delete()
         except discord.HTTPException:
             pass
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        await interaction.response.send_message("Cancelled.", ephemeral=True)
+        await interaction.response.send_message("Close cancelled.", ephemeral=True)
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+        except discord.HTTPException:
+            pass
         self.stop()
 
 
