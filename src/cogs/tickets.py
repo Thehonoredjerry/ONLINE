@@ -434,6 +434,7 @@ class TicketGroup(app_commands.Group):
         super().__init__(name="ticket", description="Challenge ticket system")
         self.bot = bot
         self.db = db
+        self._closing_ticket_ids: set[int] = set()
 
     async def _ensure_category(self, guild: discord.Guild, platform: str | None) -> discord.CategoryChannel:
         settings = await self.db.get_guild_settings(guild.id)
@@ -1041,93 +1042,101 @@ class TicketGroup(app_commands.Group):
 
         await interaction.followup.send(f"Deleted {deleted} closed ticket channel(s).", ephemeral=True)
 
-    async def _perform_close(self, interaction: discord.Interaction, ticket_id: int) -> None:
+    async def _perform_close(self, interaction: discord.Interaction, ticket_id: int) -> bool:
         # Called from the confirmation view
         if not interaction.guild or not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
-            return
+            return False
 
         ticket = await self.db.get_ticket_by_channel(interaction.channel.id)
         if not ticket or ticket.id != ticket_id:
-            return
+            return False
         if ticket.status == "closed":
-            return
+            return False
 
         if not await self._can_manage_ticket(interaction, ticket):
-            return
+            return False
+        if ticket.id in self._closing_ticket_ids:
+            return False
 
         channel = interaction.guild.get_channel(ticket.channel_id)
         if not isinstance(channel, discord.TextChannel):
-            return
+            return False
 
-        log.info("ticket_close_stage=prepare guild=%s channel=%s ticket=%s", interaction.guild.id, channel.id, ticket.id)
+        self._closing_ticket_ids.add(ticket.id)
+
         try:
-            closed_category = await self._ensure_closed_category(interaction.guild, ticket.platform)
-            open_name = await self._build_open_channel_name(interaction.guild, ticket, channel.name)
-            closed_name = self._build_closed_channel_name(ticket, open_name)
-
-            deny_overwrite = discord.PermissionOverwrite(
-                view_channel=False,
-                send_messages=False,
-                read_message_history=False,
-            )
-            opener_member = await self._resolve_member(interaction.guild, ticket.opener_id)
-            target_member = await self._resolve_member(interaction.guild, ticket.target_id)
-            if opener_member is not None:
-                await channel.set_permissions(
-                    opener_member,
-                    overwrite=deny_overwrite,
-                    reason=f"Ticket closed by {interaction.user}",
-                )
-            if target_member is not None:
-                await channel.set_permissions(
-                    target_member,
-                    overwrite=deny_overwrite,
-                    reason=f"Ticket closed by {interaction.user}",
-                )
-            await channel.edit(
-                name=closed_name,
-                category=closed_category,
-                reason=f"Ticket closed by {interaction.user}",
-            )
-        except discord.HTTPException as error:
-            log.exception(
-                "ticket_close_stage_failed stage=discord_update guild=%s channel=%s ticket=%s",
-                interaction.guild.id,
-                channel.id,
-                ticket.id,
-                exc_info=error,
-            )
+            log.info("ticket_close_stage=prepare guild=%s channel=%s ticket=%s", interaction.guild.id, channel.id, ticket.id)
             try:
-                await interaction.followup.send(
-                    "Close failed before channel update finished. Check bot permissions and logs.",
-                    ephemeral=True,
+                closed_category = await self._ensure_closed_category(interaction.guild, ticket.platform)
+                open_name = await self._build_open_channel_name(interaction.guild, ticket, channel.name)
+                closed_name = self._build_closed_channel_name(ticket, open_name)
+
+                deny_overwrite = discord.PermissionOverwrite(
+                    view_channel=False,
+                    send_messages=False,
+                    read_message_history=False,
                 )
-            except discord.HTTPException:
-                pass
-            return
+                opener_member = await self._resolve_member(interaction.guild, ticket.opener_id)
+                target_member = await self._resolve_member(interaction.guild, ticket.target_id)
+                if opener_member is not None:
+                    await channel.set_permissions(
+                        opener_member,
+                        overwrite=deny_overwrite,
+                        reason=f"Ticket closed by {interaction.user}",
+                    )
+                if target_member is not None:
+                    await channel.set_permissions(
+                        target_member,
+                        overwrite=deny_overwrite,
+                        reason=f"Ticket closed by {interaction.user}",
+                    )
+                await channel.edit(
+                    name=closed_name,
+                    category=closed_category,
+                    reason=f"Ticket closed by {interaction.user}",
+                )
+            except discord.HTTPException as error:
+                log.exception(
+                    "ticket_close_stage_failed stage=discord_update guild=%s channel=%s ticket=%s",
+                    interaction.guild.id,
+                    channel.id,
+                    ticket.id,
+                    exc_info=error,
+                )
+                try:
+                    await interaction.followup.send(
+                        "Close failed before channel update finished. Check bot permissions and logs.",
+                        ephemeral=True,
+                    )
+                except discord.HTTPException:
+                    pass
+                return False
 
-        await self.db.close_ticket(ticket.id)
+            await self.db.close_ticket(ticket.id)
 
-        settings = await self.db.get_guild_settings(interaction.guild.id)
-        try:
-            await channel.send(
-                _format_message(
-                    settings,
-                    "close_notice_message",
-                    closer_id=interaction.user.id,
-                    opener_id=ticket.opener_id,
-                    target_id=ticket.target_id,
-                ),
-                view=CloseOptionsView(self, ticket_id=ticket.id),
-            )
-        except discord.HTTPException as error:
-            log.exception(
-                "ticket_close_stage_failed stage=close_notice guild=%s channel=%s ticket=%s",
-                interaction.guild.id,
-                channel.id,
-                ticket.id,
-                exc_info=error,
-            )
+            settings = await self.db.get_guild_settings(interaction.guild.id)
+            try:
+                await channel.send(
+                    _format_message(
+                        settings,
+                        "close_notice_message",
+                        closer_id=interaction.user.id,
+                        opener_id=ticket.opener_id,
+                        target_id=ticket.target_id,
+                    ),
+                    view=CloseOptionsView(self, ticket_id=ticket.id),
+                )
+            except discord.HTTPException as error:
+                log.exception(
+                    "ticket_close_stage_failed stage=close_notice guild=%s channel=%s ticket=%s",
+                    interaction.guild.id,
+                    channel.id,
+                    ticket.id,
+                    exc_info=error,
+                )
+            return True
+        finally:
+            self._closing_ticket_ids.discard(ticket.id)
 
 
 class ConfirmCloseView(discord.ui.View):
@@ -1139,7 +1148,22 @@ class ConfirmCloseView(discord.ui.View):
     @discord.ui.button(label="Confirm close", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
         await interaction.response.defer(thinking=False)
-        await self.parent._perform_close(interaction, self.ticket_id)
+        for child in self.children:
+            child.disabled = True
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+        closed = await self.parent._perform_close(interaction, self.ticket_id)
+        if not closed:
+            try:
+                await interaction.followup.send("Close is already running or the ticket is already closed.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+            self.stop()
+            return
         try:
             await interaction.followup.send("Ticket closed.", ephemeral=True)
         except discord.HTTPException:
