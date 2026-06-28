@@ -364,6 +364,15 @@ class TicketGroup(app_commands.Group):
             return None
         return interaction.channel
 
+    async def _resolve_member(self, guild: discord.Guild, user_id: int) -> discord.Member | None:
+        member = guild.get_member(user_id)
+        if member is not None:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
     async def add_persistent_views(self) -> None:
         # Persistent view so buttons keep working after bot restarts
         self.bot.add_view(TicketPanelView(self))
@@ -697,8 +706,12 @@ class TicketGroup(app_commands.Group):
                 "This channel is not a tracked ticket.", ephemeral=True
             )
 
+        member = await self._resolve_member(interaction.guild, user.id)
+        if member is None:
+            return await interaction.response.send_message("That user is not available in this server.", ephemeral=True)
+
         await channel.set_permissions(
-            discord.Object(id=user.id),
+            member,
             view_channel=True,
             send_messages=True,
             read_message_history=True,
@@ -898,16 +911,20 @@ class TicketGroup(app_commands.Group):
                 send_messages=False,
                 read_message_history=False,
             )
-            await channel.set_permissions(
-                discord.Object(id=ticket.opener_id),
-                overwrite=deny_overwrite,
-                reason=f"Ticket closed by {interaction.user}",
-            )
-            await channel.set_permissions(
-                discord.Object(id=ticket.target_id),
-                overwrite=deny_overwrite,
-                reason=f"Ticket closed by {interaction.user}",
-            )
+            opener_member = await self._resolve_member(interaction.guild, ticket.opener_id)
+            target_member = await self._resolve_member(interaction.guild, ticket.target_id)
+            if opener_member is not None:
+                await channel.set_permissions(
+                    opener_member,
+                    overwrite=deny_overwrite,
+                    reason=f"Ticket closed by {interaction.user}",
+                )
+            if target_member is not None:
+                await channel.set_permissions(
+                    target_member,
+                    overwrite=deny_overwrite,
+                    reason=f"Ticket closed by {interaction.user}",
+                )
             await channel.edit(
                 name=closed_name,
                 category=closed_category,
@@ -1095,20 +1112,24 @@ class CloseOptionsView(discord.ui.View):
 
         # Restore perms for both users
         try:
-            await channel.set_permissions(
-                discord.Object(id=ticket.opener_id),
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                reason=f"Ticket reopened by {interaction.user}",
-            )
-            await channel.set_permissions(
-                discord.Object(id=ticket.target_id),
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                reason=f"Ticket reopened by {interaction.user}",
-            )
+            opener_member = await self.parent._resolve_member(interaction.guild, ticket.opener_id)
+            target_member = await self.parent._resolve_member(interaction.guild, ticket.target_id)
+            if opener_member is not None:
+                await channel.set_permissions(
+                    opener_member,
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    reason=f"Ticket reopened by {interaction.user}",
+                )
+            if target_member is not None:
+                await channel.set_permissions(
+                    target_member,
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    reason=f"Ticket reopened by {interaction.user}",
+                )
         except discord.HTTPException:
             pass
 
