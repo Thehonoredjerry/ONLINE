@@ -222,7 +222,7 @@ class Database:
             """,
             guild_id,
             staff_role_ids[0] if staff_role_ids else None,
-            staff_role_ids,
+            json.dumps(staff_role_ids),
         )
 
     async def set_message_template(self, guild_id: int, key: str, value: str) -> None:
@@ -296,7 +296,7 @@ class Database:
             opener_id,
             target_id,
             platform,
-            challenge_data,
+            json.dumps(challenge_data),
         )
         assert row is not None
         return Ticket(
