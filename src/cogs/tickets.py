@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import logging
 import re
@@ -97,6 +98,164 @@ def _platform_label(platform: str | None) -> str:
         "all": "top-all",
         "clan": "top-clan",
     }.get(platform or "", "ticket")
+
+
+def _render_transcript_html(
+    guild: discord.Guild,
+    channel: discord.TextChannel,
+    ticket,
+    messages: list[discord.Message],
+) -> str:
+    header = html.escape(f"{guild.name} • #{channel.name}")
+    participants = html.escape(f"Opener: {ticket.opener_id} | Target: {ticket.target_id} | Platform: {ticket.platform or '-'}")
+
+    parts: list[str] = []
+    for msg in messages:
+        avatar = html.escape(msg.author.display_avatar.url)
+        author = html.escape(msg.author.display_name)
+        meta = html.escape(msg.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
+        content = html.escape(msg.content or "").replace("\n", "<br>")
+
+        attachments = ""
+        if msg.attachments:
+            links = []
+            for attachment in msg.attachments:
+                safe_name = html.escape(attachment.filename)
+                safe_url = html.escape(attachment.url)
+                links.append(f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_name}</a>')
+            attachments = f'<div class="attachments">Attachments: {" • ".join(links)}</div>'
+
+        embeds = ""
+        if msg.embeds:
+            embed_blocks = []
+            for embed in msg.embeds:
+                title = html.escape(embed.title or "")
+                description = html.escape(embed.description or "").replace("\n", "<br>")
+                block = '<div class="embed">'
+                if title:
+                    block += f'<div class="embed-title">{title}</div>'
+                if description:
+                    block += f'<div class="embed-description">{description}</div>'
+                block += "</div>"
+                embed_blocks.append(block)
+            embeds = "".join(embed_blocks)
+
+        parts.append(
+            f"""
+            <article class="message">
+              <img class="avatar" src="{avatar}" alt="{author}">
+              <div class="bubble">
+                <div class="meta"><span class="author">{author}</span><span class="time">{meta}</span></div>
+                <div class="content">{content or '<span class="muted">[no text]</span>'}</div>
+                {attachments}
+                {embeds}
+              </div>
+            </article>
+            """
+        )
+
+    body = "\n".join(parts) if parts else '<div class="empty">No messages found.</div>'
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Transcript - {html.escape(channel.name)}</title>
+  <style>
+    :root {{
+      --bg: #1e1f22;
+      --panel: #2b2d31;
+      --panel-2: #313338;
+      --line: #3f4147;
+      --text: #f2f3f5;
+      --muted: #b5bac1;
+      --accent: #5865f2;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }}
+    .wrap {{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }}
+    .top {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }}
+    .title {{ font-size: 24px; font-weight: 700; margin-bottom: 8px; }}
+    .sub {{ color: var(--muted); font-size: 14px; }}
+    .log {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+    }}
+    .message {{
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 12px;
+      padding: 12px 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }}
+    .message:last-child {{ border-bottom: 0; }}
+    .avatar {{
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--panel-2);
+    }}
+    .meta {{
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }}
+    .author {{ font-weight: 700; }}
+    .time {{ color: var(--muted); font-size: 12px; }}
+    .content {{ line-height: 1.6; white-space: normal; word-break: break-word; }}
+    .attachments {{
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .attachments a {{
+      color: #8ea1ff;
+      text-decoration: none;
+    }}
+    .embed {{
+      margin-top: 10px;
+      border-left: 4px solid var(--accent);
+      background: var(--panel-2);
+      border-radius: 10px;
+      padding: 12px;
+    }}
+    .embed-title {{ font-weight: 700; margin-bottom: 6px; }}
+    .embed-description {{ color: #d7d9dc; line-height: 1.5; }}
+    .muted, .empty {{ color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="top">
+      <div class="title">{header}</div>
+      <div class="sub">{participants}</div>
+    </section>
+    <section class="log">
+      {body}
+    </section>
+  </div>
+</body>
+</html>"""
 
 
 class ChallengeOpenModal(discord.ui.Modal):
@@ -1061,31 +1220,12 @@ class CloseOptionsView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Build transcript (requires Message Content Intent enabled in the bot settings)
-        lines: list[str] = []
-        header = (
-            f"Ticket Transcript\n"
-            f"Guild: {interaction.guild.name} ({interaction.guild.id})\n"
-            f"Channel: #{channel.name} ({channel.id})\n"
-            f"Opener: {ticket.opener_id}\n"
-            f"Target: {ticket.target_id}\n"
-            f"Platform: {ticket.platform or ''}\n"
-            f"Exported at: {datetime.now(timezone.utc).isoformat()}\n"
-            f"{'-'*60}\n"
+        history = [msg async for msg in channel.history(limit=5000, oldest_first=True)]
+        html_doc = _render_transcript_html(interaction.guild, channel, ticket, history)
+        file = discord.File(
+            fp=io.BytesIO(html_doc.encode("utf-8", errors="replace")),
+            filename=f"ticket-{channel.id}-transcript.html",
         )
-        lines.append(header)
-
-        async for msg in channel.history(limit=5000, oldest_first=True):
-            ts = msg.created_at.replace(tzinfo=timezone.utc).isoformat()
-            author = f"{msg.author} ({msg.author.id})"
-            content = msg.content or ""
-            attach = ""
-            if msg.attachments:
-                attach = " | attachments: " + ", ".join(a.url for a in msg.attachments)
-            lines.append(f"[{ts}] {author}: {content}{attach}")
-
-        data = "\n".join(lines).encode("utf-8", errors="replace")
-        file = discord.File(fp=io.BytesIO(data), filename=f"ticket-{channel.id}-transcript.txt")
 
         await transcript_channel.send(
             content=f"Transcript saved for {channel.mention} (opener <@{ticket.opener_id}>, target <@{ticket.target_id}>)",
@@ -1136,6 +1276,11 @@ class CloseOptionsView(discord.ui.View):
         # Reopen in DB (simple update)
         await self.parent.db.reopen_ticket(ticket.id)
         await interaction.response.send_message("Ticket reopened.", ephemeral=True)
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+        except discord.HTTPException:
+            pass
         # Ping staff + both users again
         settings = await self.parent.db.get_guild_settings(interaction.guild.id)
         staff_roles = [
@@ -1154,6 +1299,25 @@ class CloseOptionsView(discord.ui.View):
                 channel=channel.mention,
             ),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+        )
+        embed = discord.Embed(
+            title="Challenge Ticket",
+            description=(
+                "Use this channel to discuss the challenge.\n\n"
+                "Use the buttons below or staff commands: `/ticket claim`, `/ticket add`, `/ticket close`"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Opener", value=f"<@{ticket.opener_id}>", inline=True)
+        embed.add_field(name="Target", value=f"<@{ticket.target_id}>", inline=True)
+        if ticket.platform:
+            embed.add_field(name="Platform", value=ticket.platform, inline=True)
+        if ticket.platform == "clan":
+            embed.add_field(name="Opener Clan", value=str(ticket.challenge_data.get("opener_clan") or "-"), inline=True)
+            embed.add_field(name="Target Clan", value=str(ticket.challenge_data.get("target_clan") or "-"), inline=True)
+        await channel.send(
+            embed=embed,
+            view=TicketManageView(self.parent, ticket_id=ticket.id),
         )
 
 
