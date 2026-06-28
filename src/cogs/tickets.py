@@ -421,8 +421,11 @@ class TicketManageView(discord.ui.View):
             return await self._deny(interaction, "This ticket is already closed.")
         if not await self.parent._can_manage_ticket(interaction, ticket):
             return await self._deny(interaction, "Only the opener or staff can close this ticket.")
+        if ticket.id in self.parent._pending_close_ticket_ids or ticket.id in self.parent._closing_ticket_ids:
+            return await self._deny(interaction, "Close is already pending or running for this ticket.")
 
         settings = await self.parent.db.get_guild_settings(interaction.guild.id)
+        self.parent._pending_close_ticket_ids.add(ticket.id)
         await interaction.response.send_message(
             _format_message(settings, "close_confirm_message", opener_id=ticket.opener_id, target_id=ticket.target_id),
             view=ConfirmCloseView(self.parent, ticket_id=ticket.id),
@@ -434,6 +437,7 @@ class TicketGroup(app_commands.Group):
         super().__init__(name="ticket", description="Challenge ticket system")
         self.bot = bot
         self.db = db
+        self._pending_close_ticket_ids: set[int] = set()
         self._closing_ticket_ids: set[int] = set()
 
     async def _ensure_category(self, guild: discord.Guild, platform: str | None) -> discord.CategoryChannel:
@@ -1008,9 +1012,14 @@ class TicketGroup(app_commands.Group):
             return await interaction.response.send_message(
                 "Only the opener or staff can close this ticket.", ephemeral=True
             )
+        if ticket.id in self._pending_close_ticket_ids or ticket.id in self._closing_ticket_ids:
+            return await interaction.response.send_message(
+                "Close is already pending or running for this ticket.", ephemeral=True
+            )
 
         # Confirmation before closing
         settings = await self.db.get_guild_settings(interaction.guild.id)
+        self._pending_close_ticket_ids.add(ticket.id)
         await interaction.response.send_message(
             _format_message(settings, "close_confirm_message", opener_id=ticket.opener_id, target_id=ticket.target_id),
             view=ConfirmCloseView(self, ticket_id=ticket.id),
@@ -1058,6 +1067,7 @@ class TicketGroup(app_commands.Group):
         if ticket.id in self._closing_ticket_ids:
             return False
 
+        self._pending_close_ticket_ids.discard(ticket.id)
         channel = interaction.guild.get_channel(ticket.channel_id)
         if not isinstance(channel, discord.TextChannel):
             return False
@@ -1148,6 +1158,7 @@ class ConfirmCloseView(discord.ui.View):
     @discord.ui.button(label="Confirm close", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
         await interaction.response.defer(thinking=False)
+        self.parent._pending_close_ticket_ids.discard(self.ticket_id)
         for child in self.children:
             child.disabled = True
         try:
@@ -1177,6 +1188,7 @@ class ConfirmCloseView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        self.parent._pending_close_ticket_ids.discard(self.ticket_id)
         await interaction.response.send_message("Close cancelled.", ephemeral=True)
         try:
             if interaction.message:
@@ -1184,6 +1196,9 @@ class ConfirmCloseView(discord.ui.View):
         except discord.HTTPException:
             pass
         self.stop()
+
+    async def on_timeout(self) -> None:
+        self.parent._pending_close_ticket_ids.discard(self.ticket_id)
 
 
 class CloseOptionsView(discord.ui.View):
