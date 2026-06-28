@@ -22,6 +22,7 @@ class ChallengeTicketBot(commands.Bot):
     def __init__(self, db: Database):
         intents = discord.Intents.default()
         intents.message_content = True  # required for transcript export
+        intents.members = True  # improves member lookup for target user checks
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
 

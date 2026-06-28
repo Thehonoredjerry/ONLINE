@@ -10,7 +10,9 @@ A Discord slash-command bot that opens **private challenge tickets**:
 1. Go to the Discord Developer Portal → Applications → **New Application**
 2. Bot → **Add Bot**
 3. Copy the bot token → set as `DISCORD_TOKEN`
-4. Bot → **Privileged Gateway Intents** → enable **Message Content Intent** (needed for transcripts)
+4. Bot → **Privileged Gateway Intents** → enable:
+   - **Message Content Intent** (needed for transcripts)
+   - **Server Members Intent** (recommended for reliable user/member checks)
 4. OAuth2 → URL Generator:
    - Scopes: `bot`, `applications.commands`
    - Bot Permissions (recommended): `Manage Channels`, `Manage Roles`, `Read Messages/View Channels`, `Send Messages`, `Manage Messages`

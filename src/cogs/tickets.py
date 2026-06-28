@@ -332,10 +332,22 @@ class TicketGroup(app_commands.Group):
                 "That doesn't look like a user ID (numbers only).", ephemeral=True
             )
         target_id = int(target_user_id)
-        if interaction.guild.get_member(target_id) is None:
-            return await interaction.response.send_message(
-                "That user is not in this server (or I can't see them).", ephemeral=True
-            )
+        target_member = interaction.guild.get_member(target_id)
+        if target_member is None:
+            try:
+                target_member = await interaction.guild.fetch_member(target_id)
+            except discord.NotFound:
+                return await interaction.response.send_message(
+                    "That user is not in this server.", ephemeral=True
+                )
+            except discord.Forbidden:
+                return await interaction.response.send_message(
+                    "I don't have permission to verify that user in this server.", ephemeral=True
+                )
+            except discord.HTTPException:
+                return await interaction.response.send_message(
+                    "Discord lookup failed. Try again in a moment.", ephemeral=True
+                )
 
         category = await self._ensure_category(interaction.guild, platform)
 
