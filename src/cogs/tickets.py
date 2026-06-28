@@ -18,21 +18,29 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_CATEGORY_NAME = "Challenge Tickets"
-MOBILE_CATEGORY_NAME = "Challenge Tickets - Mobile"
-PC_CATEGORY_NAME = "Challenge Tickets - PC"
-PANEL_EMBED_TEMPLATE = {
-    "title": "เลือก mobile / pc",
-    "description": "พร้อมใส่ user id ให้ครบ",
-    "author": {"name": "เปิด challenge"},
-}
+MOBILE_CATEGORY_NAME = "Challenge Tickets - Top Mobile"
+ALL_CATEGORY_NAME = "Challenge Tickets - Top All"
+CLAN_CATEGORY_NAME = "Challenge Tickets - Top Clan"
+CLOSED_MOBILE_CATEGORY_NAME = "Closed (Top Mobile)"
+CLOSED_ALL_CATEGORY_NAME = "Closed (Top All)"
+CLOSED_CLAN_CATEGORY_NAME = "Closed (Top Clan)"
 
 PANEL_VIEW_CUSTOM_ID_PREFIX = "challenge_ticket_panel:"
 PANEL_BTN_MOBILE_ID = f"{PANEL_VIEW_CUSTOM_ID_PREFIX}mobile"
-PANEL_BTN_PC_ID = f"{PANEL_VIEW_CUSTOM_ID_PREFIX}pc"
+PANEL_BTN_ALL_ID = f"{PANEL_VIEW_CUSTOM_ID_PREFIX}all"
+PANEL_BTN_CLAN_ID = f"{PANEL_VIEW_CUSTOM_ID_PREFIX}clan"
 DEFAULT_MESSAGE_TEMPLATES = {
     "panel_author": "เปิด challenge",
-    "panel_title": "เลือก mobile / pc",
-    "panel_description": "พร้อมใส่ user id ให้ครบ",
+    "panel_title": "เลือก top mobile / top all / top clan",
+    "panel_description": "เลือกประเภทให้ถูกก่อนเปิดตั๋ว",
+    "button_mobile_label": "Top Mobile",
+    "button_all_label": "Top All",
+    "button_clan_label": "Top Clan",
+    "button_mobile_emoji": "📱",
+    "button_all_emoji": "🏆",
+    "button_clan_emoji": "🛡️",
+    "panel_locked": "0",
+    "locked_message": "Ticket opening is currently locked.",
     "ticket_ping_message": "{staff} <@{opener_id}> <@{target_id}>",
     "ticket_open_message": "Challenge ticket opened: <@{opener_id}> vs <@{target_id}>{platform_suffix}",
     "ticket_created_reply": "Ticket created: {channel}\nOpen: {channel_url}",
@@ -80,9 +88,14 @@ def _format_message(settings, key: str, **kwargs) -> str:
         return template
 
 
+def _setting_enabled(settings, key: str, default: bool = False) -> bool:
+    raw = str(settings.message_templates.get(key, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 class ChallengeOpenModal(discord.ui.Modal):
-    def __init__(self, parent: "TicketGroup", platform: str):
-        super().__init__(title=f"Open challenge ({platform})")
+    def __init__(self, parent: "TicketGroup", platform: str, title: str):
+        super().__init__(title=title)
         self.parent = parent
         self.platform = platform
 
@@ -109,22 +122,85 @@ class ChallengeOpenModal(discord.ui.Modal):
             await interaction.response.send_message("Something failed. Staff should check bot logs.", ephemeral=True)
 
 
-class TicketPanelView(discord.ui.View):
-    def __init__(self, parent: "TicketGroup"):
-        super().__init__(timeout=None)
+class TopClanOpenModal(discord.ui.Modal):
+    def __init__(self, parent: "TicketGroup", title: str):
+        super().__init__(title=title)
         self.parent = parent
 
-    @discord.ui.button(label="Mobile", style=discord.ButtonStyle.primary, custom_id=PANEL_BTN_MOBILE_ID)
-    async def mobile(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        if not await self.parent._ensure_allowed(interaction):
-            return
-        await interaction.response.send_modal(ChallengeOpenModal(self.parent, "mobile"))
+        self.opener_clan = discord.ui.TextInput(label="แคลนตัวเอง", required=True, max_length=80)
+        self.target_clan = discord.ui.TextInput(label="แคลนที่ท้า", required=True, max_length=80)
+        self.target_user_id = discord.ui.TextInput(
+            label="user id หัวแคลนที่ท้า",
+            placeholder="Paste Discord user ID (numbers)",
+            required=True,
+            max_length=25,
+        )
 
-    @discord.ui.button(label="PC", style=discord.ButtonStyle.success, custom_id=PANEL_BTN_PC_ID)
-    async def pc(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        self.add_item(self.opener_clan)
+        self.add_item(self.target_clan)
+        self.add_item(self.target_user_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.parent._handle_open(
+            interaction,
+            target_user_id=str(self.target_user_id.value),
+            platform="clan",
+            challenge_data={
+                "opener_clan": str(self.opener_clan.value).strip(),
+                "target_clan": str(self.target_clan.value).strip(),
+            },
+        )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        log.exception("modal_submit_failed guild=%s user=%s", getattr(interaction.guild, "id", None), getattr(interaction.user, "id", None), exc_info=error)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Something failed. Staff should check bot logs.", ephemeral=True)
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, parent: "TicketGroup", settings=None):
+        super().__init__(timeout=None)
+        self.parent = parent
+        if settings is not None:
+            self.mobile.label = f"{_message_template(settings, 'button_mobile_emoji')} {_message_template(settings, 'button_mobile_label')}".strip()
+            self.all.label = f"{_message_template(settings, 'button_all_emoji')} {_message_template(settings, 'button_all_label')}".strip()
+            self.clan.label = f"{_message_template(settings, 'button_clan_emoji')} {_message_template(settings, 'button_clan_label')}".strip()
+
+    async def _guard_locked(self, interaction: discord.Interaction) -> bool:
         if not await self.parent._ensure_allowed(interaction):
+            return False
+        settings = await self.parent.db.get_guild_settings(interaction.guild.id)
+        if _setting_enabled(settings, "panel_locked", False):
+            await interaction.response.send_message(_message_template(settings, "locked_message"), ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Top Mobile", style=discord.ButtonStyle.primary, custom_id=PANEL_BTN_MOBILE_ID)
+    async def mobile(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        settings = await self.parent.db.get_guild_settings(interaction.guild.id)
+        if not await self._guard_locked(interaction):
             return
-        await interaction.response.send_modal(ChallengeOpenModal(self.parent, "pc"))
+        await interaction.response.send_modal(
+            ChallengeOpenModal(self.parent, "mobile", _message_template(settings, "button_mobile_label"))
+        )
+
+    @discord.ui.button(label="Top All", style=discord.ButtonStyle.success, custom_id=PANEL_BTN_ALL_ID)
+    async def all(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        settings = await self.parent.db.get_guild_settings(interaction.guild.id)
+        if not await self._guard_locked(interaction):
+            return
+        await interaction.response.send_modal(
+            ChallengeOpenModal(self.parent, "all", _message_template(settings, "button_all_label"))
+        )
+
+    @discord.ui.button(label="Top Clan", style=discord.ButtonStyle.secondary, custom_id=PANEL_BTN_CLAN_ID)
+    async def clan(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        settings = await self.parent.db.get_guild_settings(interaction.guild.id)
+        if not await self._guard_locked(interaction):
+            return
+        await interaction.response.send_modal(
+            TopClanOpenModal(self.parent, _message_template(settings, "button_clan_label"))
+        )
 
 
 class TicketManageView(discord.ui.View):
@@ -158,6 +234,10 @@ class TicketManageView(discord.ui.View):
             return await self._deny(interaction, "This ticket is already closed.")
         if not await self.parent._is_staff(interaction):
             return await self._deny(interaction, "Only staff roles or the owner can claim.")
+        if ticket.claimed_by:
+            if ticket.claimed_by == interaction.user.id:
+                return await self._deny(interaction, "You already claimed this ticket.")
+            return await self._deny(interaction, f"This ticket is already claimed by <@{ticket.claimed_by}>.")
 
         await self.parent.db.claim_ticket(ticket.id, interaction.user.id)
         settings = await self.parent.db.get_guild_settings(interaction.guild.id)
@@ -200,14 +280,17 @@ class TicketGroup(app_commands.Group):
         if platform == "mobile":
             wanted_name = MOBILE_CATEGORY_NAME
             wanted_id = settings.ticket_category_mobile_id
-        elif platform == "pc":
-            wanted_name = PC_CATEGORY_NAME
+        elif platform == "all":
+            wanted_name = ALL_CATEGORY_NAME
             wanted_id = settings.ticket_category_pc_id
+        elif platform == "clan":
+            wanted_name = CLAN_CATEGORY_NAME
+            wanted_id = None
         else:
-            # fallback: if platform isn't specified, prefer PC category if set, else Mobile, else default
+            # fallback: if platform isn't specified, prefer All category if set, else Mobile, else default
             wanted_id = settings.ticket_category_pc_id or settings.ticket_category_mobile_id
             if settings.ticket_category_pc_id:
-                wanted_name = PC_CATEGORY_NAME
+                wanted_name = ALL_CATEGORY_NAME
             elif settings.ticket_category_mobile_id:
                 wanted_name = MOBILE_CATEGORY_NAME
 
@@ -222,24 +305,37 @@ class TicketGroup(app_commands.Group):
             if c.name == wanted_name:
                 if platform == "mobile":
                     await self.db.set_ticket_category_mobile(guild.id, c.id)
-                elif platform == "pc":
+                elif platform == "all":
                     await self.db.set_ticket_category_pc(guild.id, c.id)
                 else:
-                    # store as both if none specified
-                    await self.db.set_ticket_category_mobile(guild.id, c.id)
-                    await self.db.set_ticket_category_pc(guild.id, c.id)
+                    if platform is None:
+                        await self.db.set_ticket_category_mobile(guild.id, c.id)
+                        await self.db.set_ticket_category_pc(guild.id, c.id)
                 return c
 
         # Create
         category = await guild.create_category(wanted_name, reason="Ticket category setup")
         if platform == "mobile":
             await self.db.set_ticket_category_mobile(guild.id, category.id)
-        elif platform == "pc":
+        elif platform == "all":
             await self.db.set_ticket_category_pc(guild.id, category.id)
         else:
-            await self.db.set_ticket_category_mobile(guild.id, category.id)
-            await self.db.set_ticket_category_pc(guild.id, category.id)
+            if platform is None:
+                await self.db.set_ticket_category_mobile(guild.id, category.id)
+                await self.db.set_ticket_category_pc(guild.id, category.id)
         return category
+
+    async def _ensure_closed_category(self, guild: discord.Guild, platform: str | None) -> discord.CategoryChannel:
+        wanted_name = CLOSED_ALL_CATEGORY_NAME
+        if platform == "mobile":
+            wanted_name = CLOSED_MOBILE_CATEGORY_NAME
+        elif platform == "clan":
+            wanted_name = CLOSED_CLAN_CATEGORY_NAME
+
+        for c in guild.categories:
+            if c.name == wanted_name:
+                return c
+        return await guild.create_category(wanted_name, reason="Closed ticket category setup")
 
     async def _get_ticket_channel(self, interaction: discord.Interaction) -> discord.TextChannel | None:
         if not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
@@ -309,7 +405,7 @@ class TicketGroup(app_commands.Group):
         embed.set_author(name=_message_template(settings, "panel_author"))
 
         await interaction.response.send_message("Panel sent.", ephemeral=True)
-        await interaction.channel.send(embed=embed, view=TicketPanelView(self))  # type: ignore[union-attr]
+        await interaction.channel.send(embed=embed, view=TicketPanelView(self, settings=settings))  # type: ignore[union-attr]
 
     @app_commands.command(
         name="open",
@@ -382,7 +478,12 @@ class TicketGroup(app_commands.Group):
         target_display = target_member.display_name
         bot_member = interaction.guild.me or interaction.guild.get_member(self.bot.user.id if self.bot.user else 0)
 
-        channel_name = _sanitize_channel_name(f"{opener_display}-vs-{target_display}")
+        if platform == "clan":
+            opener_clan = str(challenge_data.get("opener_clan") or opener_display)
+            target_clan = str(challenge_data.get("target_clan") or target_display)
+            channel_name = _sanitize_channel_name(f"{opener_clan}-vs-{target_clan}")
+        else:
+            channel_name = _sanitize_channel_name(f"{opener_display}-vs-{target_display}")
 
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -469,6 +570,9 @@ class TicketGroup(app_commands.Group):
                 embed.add_field(name="Target", value=f"<@{target_id}>", inline=True)
                 if platform:
                     embed.add_field(name="Platform", value=platform, inline=True)
+                if platform == "clan":
+                    embed.add_field(name="Opener Clan", value=str(challenge_data.get("opener_clan") or "-"), inline=True)
+                    embed.add_field(name="Target Clan", value=str(challenge_data.get("target_clan") or "-"), inline=True)
 
                 content = _format_message(
                     settings,
@@ -612,11 +716,76 @@ class TicketGroup(app_commands.Group):
             )
         if ticket.status == "closed":
             return await interaction.response.send_message("This ticket is already closed.", ephemeral=True)
+        if ticket.claimed_by:
+            if ticket.claimed_by == interaction.user.id:
+                return await interaction.response.send_message("You already claimed this ticket.", ephemeral=True)
+            return await interaction.response.send_message(
+                f"This ticket is already claimed by <@{ticket.claimed_by}>.", ephemeral=True
+            )
 
         await self.db.claim_ticket(ticket.id, interaction.user.id)
         await interaction.response.send_message(
             _format_message(settings, "claim_success_message", claimer_id=interaction.user.id)
         )
+
+    @app_commands.command(
+        name="unclaim",
+        description="Unclaim the current ticket (only the claimer)",
+    )
+    async def unclaim(self, interaction: discord.Interaction):
+        if not await self._ensure_allowed(interaction):
+            return
+        if not interaction.guild:
+            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Could not read your member info.", ephemeral=True)
+
+        channel = await self._get_ticket_channel(interaction)
+        if not channel:
+            return await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
+
+        ticket = await self.db.get_ticket_by_channel(channel.id)
+        if not ticket:
+            return await interaction.response.send_message(
+                "This channel is not a tracked ticket.", ephemeral=True
+            )
+        if not ticket.claimed_by:
+            return await interaction.response.send_message("This ticket is not currently claimed.", ephemeral=True)
+        if ticket.claimed_by != interaction.user.id:
+            return await interaction.response.send_message(
+                "Only the staff member who claimed this ticket can unclaim it.", ephemeral=True
+            )
+
+        await self.db.unclaim_ticket(ticket.id)
+        await interaction.response.send_message("Ticket unclaimed.")
+
+    @app_commands.command(
+        name="force-unclaim",
+        description="Owner only: force unclaim the current ticket",
+    )
+    async def force_unclaim(self, interaction: discord.Interaction):
+        if not await self._ensure_allowed(interaction):
+            return
+        if not interaction.guild:
+            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+        if interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message("Owner only.", ephemeral=True)
+
+        channel = await self._get_ticket_channel(interaction)
+        if not channel:
+            return await interaction.response.send_message("Use this inside a ticket channel.", ephemeral=True)
+
+        ticket = await self.db.get_ticket_by_channel(channel.id)
+        if not ticket:
+            return await interaction.response.send_message(
+                "This channel is not a tracked ticket.", ephemeral=True
+            )
+        if not ticket.claimed_by:
+            return await interaction.response.send_message("This ticket is not currently claimed.", ephemeral=True)
+
+        claimed_by = ticket.claimed_by
+        await self.db.unclaim_ticket(ticket.id)
+        await interaction.response.send_message(f"Force-unclaimed ticket from <@{claimed_by}>.")
 
     @app_commands.command(
         name="close",
@@ -673,6 +842,12 @@ class TicketGroup(app_commands.Group):
         try:
             await interaction.channel.set_permissions(discord.Object(id=ticket.opener_id), view_channel=False)
             await interaction.channel.set_permissions(discord.Object(id=ticket.target_id), view_channel=False)
+        except discord.HTTPException:
+            pass
+
+        try:
+            closed_category = await self._ensure_closed_category(interaction.guild, ticket.platform)
+            await interaction.channel.edit(category=closed_category, reason=f"Ticket closed by {interaction.user}")
         except discord.HTTPException:
             pass
 
@@ -810,6 +985,12 @@ class CloseOptionsView(discord.ui.View):
             return await self._deny(interaction, "This is not a ticket channel.")
         if not await self.parent._is_staff(interaction):
             return await self._deny(interaction, "Staff only.")
+
+        try:
+            open_category = await self.parent._ensure_category(interaction.guild, ticket.platform)
+            await channel.edit(category=open_category, reason=f"Ticket reopened by {interaction.user}")
+        except discord.HTTPException:
+            pass
 
         # Restore perms for both users
         try:

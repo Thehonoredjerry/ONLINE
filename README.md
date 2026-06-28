@@ -44,24 +44,34 @@ python -m src.main
 
 All settings should be managed from your website/dashboard:
 - staff role IDs
-- mobile category ID
-- pc category ID
+- top mobile category ID
+- top all category ID
 - transcript channel ID
 - panel text
+- button labels / emoji
+- panel lock toggle and locked message
 - custom ticket messages
 
 ## Commands
 - `/allow-bot` → enable the bot in the current server (owner only)
 - `/ticket open target_user_id:<id>` → (staff only) manual/backup way to create a ticket
-- `/ticket panel` → send a message with **Mobile/PC** buttons that opens a modal (admin)
+- `/ticket panel` → send a message with **Top Mobile / Top All / Top Clan** buttons that opens a modal (admin)
 - `/ticket add user:<user>` → add extra user (staff only)
 - `/ticket claim` → mark as claimed (staff roles or owner only)
+- `/ticket unclaim` → only the staff member who claimed the ticket can unclaim it
+- `/ticket force-unclaim` → owner only, removes any existing claim
 - `/ticket close` → asks confirmation, then closes ticket (opener or staff). After close: **only staff** can see the channel and choose: Delete / Save transcript / Reopen.
 
 ## Notes / Tips
 - To copy a user ID: enable Developer Mode in Discord → right-click user → **Copy ID**
 - Global slash commands can take time to appear. For testing, set `DEV_GUILD_ID` to your server ID (guild-only sync).
- - Recommended flow: run `/ticket panel` in the channel where you want users to open challenges, then users click **Mobile** or **PC** and paste the target user ID.
- - The modal only asks for **Target user ID** (required).
+ - Recommended flow: run `/ticket panel` in the channel where you want users to open challenges, then users click **Top Mobile**, **Top All**, or **Top Clan**.
+ - `Top Mobile` and `Top All` only ask for **Target user ID**.
+ - `Top Clan` asks for:
+   - `แคลนตัวเอง`
+   - `แคลนที่ท้า`
+   - `user id หัวแคลนที่ท้า`
  - When a ticket is created, the bot pings: **all staff roles + opener + target** inside the ticket.
- - Ticket channels are named like `opener-vs-target`.
+ - Ticket channels are named like `opener-vs-target`, or `openerclan-vs-targetclan` for clan tickets.
+ - A ticket can only be claimed by one staff member at a time.
+ - Closed tickets are moved into auto-created categories like `Closed (Top Mobile)`, `Closed (Top All)`, or `Closed (Top Clan)`.

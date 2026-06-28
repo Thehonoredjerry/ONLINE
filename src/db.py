@@ -345,6 +345,16 @@ class Database:
             staff_user_id,
         )
 
+    async def unclaim_ticket(self, ticket_id: int) -> None:
+        await self._execute(
+            """
+            UPDATE tickets
+            SET claimed_by=NULL
+            WHERE id=$1
+            """,
+            ticket_id,
+        )
+
     async def close_ticket(self, ticket_id: int) -> None:
         await self._execute(
             """
